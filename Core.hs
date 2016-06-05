@@ -138,7 +138,7 @@ data CTerm = CStar
 type Equations  = [(VTerm, VTerm)]
 
 data MetaKind = Guarded Equations QTerm
-              | Check CTerm VType
+              | Check CTerm
               | Solution VTerm
               | Unknown
 
@@ -184,7 +184,7 @@ parens s
   | otherwise    = s
 
 instance Show Syntax where
-  show  Star        = "*"
+  show  Star        = "Type"
   show (Pi "_" a b) = concat [parens (show a), " -> ", show b]
   show (Pi  n  a b) = concat ["(", n, " : ", show a, ")", " -> ", show b]
   show (Lam n t)    = concat ["\\", n, " -> ", show t]

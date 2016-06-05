@@ -85,17 +85,29 @@ newQGuarded es = newQMetaKind "" . Guarded es
 newVGuarded :: (Monad m) => Equations -> QTerm -> VType -> TCMT m VTerm
 newVGuarded es = newVMetaKind "" . Guarded es
 
-newQCheck :: (Monad m) => CTerm -> VType -> TCMT m QType
-newQCheck t a = newQMetaKind "" (Check t a) a
+newQCheck :: (Monad m) => CTerm -> VType -> TCMT m QTerm
+newQCheck = newQMetaKind "" . Check
 
 newVCheck :: (Monad m) => CTerm -> VType -> TCMT m VTerm
-newVCheck t a = newVMetaKind "" (Check t a) a
+newVCheck = newVMetaKind "" . Check
 
 newQMeta :: (Monad m) => Name -> VType -> TCMT m QTerm
 newQMeta n = newQMetaKind n Unknown
 
 newVMeta :: (Monad m) => Name -> VType -> TCMT m VTerm
 newVMeta n = newVMetaKind n Unknown
+
+newTypedQMetaKind :: (Monad m) => MetaKind -> TCMT m (QTerm, VType)
+newTypedQMetaKind mk = do
+  a <- newVMeta "" VStar
+  x <- newQMetaKind "" mk a
+  return (x, a)
+
+newTypedQCheck :: (Monad m) => CTerm -> TCMT m (QTerm, VType)
+newTypedQCheck = newTypedQMetaKind . Check
+
+newTypedQMeta :: (Monad m) => TCMT m (QTerm, VType)
+newTypedQMeta = newTypedQMetaKind Unknown
 
 vguardedWhen :: (Monad m) => Equations -> QTerm -> VType -> TCMT m VTerm
 vguardedWhen [] t a = lift $ eval t
@@ -145,7 +157,7 @@ tryQAppUnify t                   s                   = [] <$ tryFlexAny t s
 tryEtaExpandUnifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations)
                       -> VTerm -> VTerm -> MaybeT TCM Equations
 tryEtaExpandUnifyWith cont t@(VLam n a k) s = lift $ unifyWith cont t (etaExpand n a s)
-tryEtaExpandUnifyWith cont _            _   = mzero
+tryEtaExpandUnifyWith cont _              _ = mzero
 
 tryEtaExpandUnifyWithBoth :: (VTerm -> VTerm -> MaybeT TCM Equations)
                           -> VTerm -> VTerm -> MaybeT TCM Equations
@@ -182,7 +194,7 @@ vunify = unifyWith tryQuoteUnify
 -- A guard/check can't be resolved during unification/checking,
 -- because it's not in scope there, so we're safe.
 -- This is disgusting.
-solveConstraints :: TCM ()
+{-solveConstraints :: TCM ()
 solveConstraints = do
   (i, das, (m, mas)) <- lift get
   forM_ mas $ \(n, (a, mk)) -> case mk of
@@ -191,51 +203,44 @@ solveConstraints = do
       lift $ if null es'
          then qsolveMeta n t
          else updateMeta n (Guarded es' t)
-    Check t a    -> do
+    Check t      -> do
       na <- lift $ vnorm a
       tc <- tryCheck t a
       lift $ case tc of
         Right t' -> qsolveMeta n t'
-        Left _   -> updateMeta n (Check t na)
-    _            -> return ()
+        Left _   -> updateMeta n (Check t) -- na
+    _            -> return ()-}
 
 unify :: VTerm -> VTerm -> TCM Equations
-unify t s = vunify t s <* solveConstraints -- <* vnormTypes
+unify t s = vunify t s -- <* solveConstraints -- <* vnormTypes
 
-infer :: CTerm -> TCM (Either CTerm (QTerm, VType))
-infer    CStar        = return $ Right (QStar, VStar)
+infer :: CTerm -> TCM (QTerm, VType)
+infer    CStar        = return (QStar, VStar)
 infer   (CPi n i a b) = do
   (na, ena) <- checkEval a VStar
   regTyped n ena i $ do
     nb <- check b VStar
-    return $ Right (QPi n i na nb, VStar)
+    return (QPi n i na nb, VStar)
 infer   (CLam n i t)  = lift2 $ throwE "lambdas are non-inferrable"
 infer t@(CApp h ts)   = do
-  a <- typeOf h
-  vpis <- lift $ countVPis a
-  if vpis < length ts
-    then return $ Left t
-    else Right <$> saturate (QApp h) a ts
-infer    CMeta        = do
-  a <- newVMeta "" VStar
-  x <- newQMeta "" a
-  return $ Right (x, a)
+  b <- typeOf h
+  pis <- lift $ countVPis b
+  if pis < length ts
+    then newTypedQCheck t
+    else saturate (QApp h) b ts
+infer    CMeta        = newTypedQMeta
 
 saturate :: (QSpine -> QTerm) -> VType -> CSpine -> TCM (QTerm, VType)
 saturate k  a           []    = return (k [], a)
 saturate k (VPi n a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (nx:)) (b enx) xs
 
-tryCheck :: CTerm -> VType -> TCM (Either CTerm QTerm)
-tryCheck (CLam n i t) (VPi m a b) =
-  QLam n i <<$>> (lift $ Right <$> quote a) <<*>> regTyped n a i (tryCheck t (b (vvar i)))
-tryCheck  t            a          = infer t >>= \e -> case e of
-  Left t'        -> return (Left t')
-  Right (t', a') -> unify a' a >>= \es -> Right <$> qguardedWhen es t' a'
-
 check :: CTerm -> VType -> TCM QTerm
-check t a = tryCheck t a >>= \e -> case e of
-  Left  t' -> newQCheck t' a
-  Right t' -> return t'
+check (CLam n i t) (VPi m a b) =
+  QLam n i <$> lift (quote a) <*> regTyped n a i (check t (b (vvar i)))
+check  t            a          = do
+  (t', a') <- infer t
+  es <- unify a' a
+  qguardedWhen es t' a
 
 checkEval :: CTerm -> VType -> TCM (QTerm, VTerm)
 checkEval t a = do

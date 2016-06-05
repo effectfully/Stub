@@ -33,10 +33,11 @@ evalTCM1 = fst <.> runTCM
 
 testit = evalTCM1 (stypecheck it Star)
 
--- Right (\B -> \y -> y,(A : *) -> A -> A)
+-- Right (\B -> \y -> y,(A : Type) -> A -> A)
 testi = evalTCM1 (stypecheck i it)
 
--- Right (\A -> \B -> \f -> \x -> f x,(A : *) -> (B : A -> *) -> ((x : A) -> B x) -> (x : A) -> B x)
+-- Right (\A -> \B -> \f -> \x -> f x,
+--         (A : Type) -> (B : A -> Type) -> ((x : A) -> B x) -> (x : A) -> B x)
 testa = evalTCM1 (stypecheck a at)
 
 getSyntax t = evalTCM1 (trackFreesToTCM $ toCTerm t)
