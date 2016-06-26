@@ -31,6 +31,7 @@ import Control.Monad.Trans.Except (ExceptT(..), runExceptT, throwE)
 
 infixr 6 <.>
 infixl 4 <<$>>, <<*>>, <&>
+infixl 3 .>, <.
 infixl 1 >>>=
 infixl 2 ?>
 
@@ -88,11 +89,19 @@ third3 f (x1, x2, x3) = (x1, x2, f x3)
 first4 :: (a -> e) -> (a, b, c, d) -> (e, b, c, d)
 first4 f (x1, x2, x3, x4) = (f x1, x2, x3, x4)
 
+(.>) :: Functor f => a -> f b -> f (a, b)
+x .> b = (,) x <$> b
+
+(<.) :: Functor f => f a -> b -> f (a, b)
+a <. y = flip (,) y <$> a
+
 firstM :: Functor f => (a -> f c) -> (a, b) -> f (c, b)
-firstM f (x, y) = flip (,) y <$> f x
+firstM f (x, y) = f x <. y
 
 secondM :: Functor f => (b -> f c) -> (a, b) -> f (a, c)
-secondM g (x, y) = (,) x <$> g y
+secondM g (x, y) = x .> g y
+
+
 
 both :: (a -> Bool) -> a -> a -> Bool
 both p x y = p x == p y
@@ -146,6 +155,9 @@ fromMaybeT a m = runMaybeT m >>= maybe a return
 
 withReaderTM :: (Monad m) => (s -> m r) -> ReaderT r m a -> ReaderT s m a
 withReaderTM f a = ReaderT $ f >=> runReaderT a
+
+readerToState :: (Functor m) => (s -> r) -> ReaderT r m a -> StateT s m a
+readerToState f r = StateT $ \e -> (runReaderT r (f e)) <. e
 
 modifyM :: (Monad m) => (s -> m s) -> StateT s m ()
 modifyM f = StateT $ (,) () <.> f

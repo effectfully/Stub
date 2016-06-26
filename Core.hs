@@ -33,6 +33,7 @@ headFreeVarsModulo is = (\\ is) . headFreeVars
 
 type VType  = VTerm
 type VSpine = [VTerm] -- Spines should be strict, right?
+type VCon   = Env Int (Name, VType) -- `IntMap`.
 
 data VTerm = VStar
            | VPi !Name VType (VTerm -> VType)
@@ -56,10 +57,9 @@ vdef = vflex Def
 vmeta :: Name -> VTerm
 vmeta = vflex Meta
 
--- Do something with names or generate them later if needed?
-craftVLams :: [VTerm] -> (VSpine -> VTerm) -> VTerm
+{-craftVLams :: VSpine -> (VSpine -> VTerm) -> VTerm
 craftVLams  []    k = k []
-craftVLams (a:as) k = VLam "" a $ \x -> craftVLams as (k . (x:))
+craftVLams (a:as) k = VLam "" a $ \x -> craftVLams as (k . (x:))-}
 
 appVSpine :: VTerm -> VSpine -> VTerm
 appVSpine (VLam _ _ k) (x:xs) = appVSpine (k x) xs
@@ -72,6 +72,7 @@ etaExpand n a = VLam n a . VApp
 
 type QType  = QTerm
 type QSpine = [QTerm]
+type QCon   = Env Int (Name, QType)
 
 data QTerm = QStar
            | QPi  !Name !Int QType QType
@@ -96,6 +97,9 @@ isForeverNeutral :: QTerm -> Bool
 isForeverNeutral (QApp (Var i) _) = True
 isForeverNeutral  _               = False
 
+spineQApp :: QTerm -> QTerm -> QTerm
+spineQApp (QApp n ts) t = QApp n (ts ++ [t])
+
 allFreeVarsModulo :: Frees -> QTerm -> Frees
 allFreeVarsModulo is  QStar         = []
 allFreeVarsModulo is (QPi  n i a b) = allFreeVarsModulo is a ++ allFreeVarsModulo (i:is) b
@@ -108,12 +112,9 @@ freeVarsModulo is = qnub . allFreeVarsModulo is
 freeVars :: QTerm -> Frees
 freeVars = freeVarsModulo []
 
-craftQLamsFrom :: [(Int, QType)] -> QTerm -> QTerm
-craftQLamsFrom  []            t = t
-craftQLamsFrom ((i, a) : ias) t = QLam "" i a (craftQLamsFrom ias t)
-
-spineQApp :: QTerm -> QTerm -> QTerm
-spineQApp (QApp n ts) t = QApp n (ts ++ [t])
+craftQLams :: QCon -> QTerm -> QTerm
+craftQLams  []                  t = t
+craftQLams ((i, (n, a)) : inas) t = QLam n i a (craftQLams inas t)
 
 pureEval :: (Env Int VTerm -> Head -> Maybe VTerm) -> QTerm -> VTerm
 pureEval (!) = go [] where
@@ -189,4 +190,4 @@ instance Show Syntax where
   show (Pi  n  a b) = concat ["(", n, " : ", show a, ")", " -> ", show b]
   show (Lam n t)    = concat ["\\", n, " -> ", show t]
   show (App n [])   = n
-  show (App n ts)   = concat $ intersperse " " [n, ts >>= parens . show]
+  show (App n ts)   = concat . intersperse " " $ n : map (parens . show) ts

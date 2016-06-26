@@ -6,7 +6,6 @@ import Core
 type DefEnv     = Env Name (VTerm, VType)
 type MetaEnv    = (Int, Env Name (VType, MetaKind))
 type ContextT m = StateT (Int, DefEnv, MetaEnv) (ExceptT String m)
-type Con        = Env Int (Name, VType) -- `IntMap`.
 
 lookupContext :: (Monad m, Eq a, Show a) => a -> Env a b -> ContextT m b
 lookupContext x = maybe (lift . throwE $ "panic: " ++ show x ++ " is not found") return . lookup x
@@ -62,9 +61,9 @@ quote (VHead h)    = return $ QApp h []
 quote (VLam n a k) = fresh $ \i -> QLam n i <$> quote a <*> quote (k (vvar i))
 quote (VApp f x)   = spineQApp <$> quote f <*> quote x
 
-craftVPis :: (Monad m) => Con -> VType -> ContextT m VType
+craftVPis :: (Monad m) => VCon -> VType -> ContextT m VType
 craftVPis inas = go inas (\vs -> unVar >=> flip lookup vs) <.> quote where
-  go :: Con -> (Env Int VTerm -> Head -> Maybe VTerm) -> QType -> VType
+  go :: VCon -> (Env Int VTerm -> Head -> Maybe VTerm) -> QType -> VType
   go  []                  k a = pureEval k a
   go ((i, (n, a)) : inas) k b = VPi n a $ \x -> go inas (k . ((i, x):)) b
 

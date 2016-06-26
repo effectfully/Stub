@@ -24,13 +24,11 @@ toCTerm = go [] where
 
 --------------------
 
--- Unification works in this context indeed, but typechecking
--- should run in `StateT Con (ContextT m)` to avoid that `vnorm` in `typeOf`.
-type TCMT m = ReaderT Con (ContextT m)
+type TCMT m = StateT VCon (ContextT m)
 type TCM    = TCMT Identity
 
 runTCMT :: (Monad m) => TCMT m a -> m (Either String (a, (Int, DefEnv, MetaEnv)))
-runTCMT a = runExceptT (runStateT (runReaderT a []) (0, [], (0, [])))
+runTCMT a = runExceptT (runStateT (evalStateT a []) (0, [], (0, [])))
 
 runTCM :: TCM a -> Either String (a, (Int, DefEnv, MetaEnv))
 runTCM = runIdentity . runTCMT
@@ -38,34 +36,36 @@ runTCM = runIdentity . runTCMT
 evalTCM :: TCM a -> Either String (a, Env Name (VType, MetaKind))
 evalTCM = (\(x, (_, _, (_, mks))) -> (x, mks)) <.> runTCM
 
-trackFreesToTCM :: TrackFreesT m a -> TCMT m a
-trackFreesToTCM = withReaderT (map fst)
+trackFreesToTCM :: (Functor m) => TrackFreesT m a -> TCMT m a
+trackFreesToTCM = readerToState (map fst)
 
-regTyped :: (Monad m) => Name -> VType -> Int -> TCMT m a -> TCMT m a
-regTyped n a i k = local ((i, (n, a)) :) k
+withTyped :: (Monad m) => Name -> VType -> Int -> TCMT m a -> TCMT m a
+withTyped n a i k = modify ((i, (n, a)) :) *> k <* modify tail
 
 freshTyped :: (Monad m) => Name -> VType -> (Int -> TCMT m a) -> TCMT m a
-freshTyped n a k = lift getFresh >>= \i -> regTyped n a i (k i)
+freshTyped n a k = lift getFresh >>= \i -> withTyped n a i (k i)
 
 freshTypedVar :: (Monad m) => Name -> VType -> (VTerm -> TCMT m a) -> TCMT m a
 freshTypedVar n a k = freshTyped n a (k . vvar)
 
-typeOf :: (Monad m) => Head -> TCMT m VType
-typeOf h = vnorm =<<< do
-  inas <- ask
+nameVTypeOf :: (Monad m) => Head -> TCMT m (Name, VType)
+nameVTypeOf h = do
+  inas <- get
   (_, das, (_, mas)) <- lift get 
   lift $ case h of
-    (Flex Def n)  -> snd <$> lookupContext n das
-    (Flex Meta n) -> fst <$> lookupContext n mas
-    (Var i)       -> snd <$> lookupContext i inas
+    (Flex Def n)  -> n .> snd <$> lookupContext n das
+    (Flex Meta n) -> n .> fst <$> lookupContext n mas
+    (Var i)       -> lookupContext i inas
 
--- In a future.
--- vnormTypes :: TCM ()
--- vnormTypes = modifyM $ traverse (secondM (secondM vnorm))
+nameQTypeOf :: (Monad m) => Head -> TCMT m (Name, QType)
+nameQTypeOf h = nameVTypeOf h >>>= secondM quote
+
+vnormTypes :: TCM ()
+vnormTypes = modifyM $ traverse (secondM (secondM vnorm))
 
 newMetaKindBy :: (Monad m) => (Name -> Frees -> a) -> Name -> MetaKind -> VType -> TCMT m a
 newMetaKindBy k n mk a = do
-  inas <- ask
+  inas <- get
   lift $ do
     (i, das, (m, mas)) <- get
     let nm = '?' : n ++ show m
@@ -124,8 +124,7 @@ tryMiller :: QTerm -> QTerm -> MaybeT TCM ()
 tryMiller (QApp (Flex Meta n) ts) s | Just lvs <- traverse unQVar ts = do
   True <- lift2 $ checkIsSolvable n
   lift $ freeVars s `isUniqueSublistOf` lvs ?>
-    (traverse (\i -> typeOf (Var i) >>>= (,) i <.> quote) lvs >>>=
-      qsolveMeta n . flip craftQLamsFrom s)
+    (traverse (\i -> i .> nameQTypeOf (Var i)) lvs >>>= qsolveMeta n . flip craftQLams s)
 tryMiller  t                      s = mzero
 
 tryMillerBoth :: QTerm -> QTerm -> MaybeT TCM ()
@@ -194,7 +193,7 @@ vunify = unifyWith tryQuoteUnify
 -- A guard/check can't be resolved during unification/checking,
 -- because it's not in scope there, so we're safe.
 -- This is disgusting.
-{-solveConstraints :: TCM ()
+solveConstraints :: TCM ()
 solveConstraints = do
   (i, das, (m, mas)) <- lift get
   forM_ mas $ \(n, (a, mk)) -> case mk of
@@ -203,27 +202,27 @@ solveConstraints = do
       lift $ if null es'
          then qsolveMeta n t
          else updateMeta n (Guarded es' t)
-    Check t      -> do
+    Check t      -> undefined {-do
       na <- lift $ vnorm a
       tc <- tryCheck t a
       lift $ case tc of
         Right t' -> qsolveMeta n t'
-        Left _   -> updateMeta n (Check t) -- na
-    _            -> return ()-}
+        Left _   -> updateMeta n (Check t) -} -- na
+    _            -> return ()
 
 unify :: VTerm -> VTerm -> TCM Equations
-unify t s = vunify t s -- <* solveConstraints -- <* vnormTypes
+unify t s = vunify t s {- <* solveConstraints -} <* vnormTypes
 
 infer :: CTerm -> TCM (QTerm, VType)
 infer    CStar        = return (QStar, VStar)
 infer   (CPi n i a b) = do
   (na, ena) <- checkEval a VStar
-  regTyped n ena i $ do
+  withTyped n ena i $ do
     nb <- check b VStar
     return (QPi n i na nb, VStar)
 infer   (CLam n i t)  = lift2 $ throwE "lambdas are non-inferrable"
 infer t@(CApp h ts)   = do
-  b <- typeOf h
+  b <- snd <$> nameVTypeOf h
   pis <- lift $ countVPis b
   if pis < length ts
     then newTypedQCheck t
@@ -236,7 +235,7 @@ saturate k (VPi n a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (n
 
 check :: CTerm -> VType -> TCM QTerm
 check (CLam n i t) (VPi m a b) =
-  QLam n i <$> lift (quote a) <*> regTyped n a i (check t (b (vvar i)))
+  QLam n i <$> lift (quote a) <*> withTyped n a i (check t (b (vvar i)))
 check  t            a          = do
   (t', a') <- infer t
   es <- unify a' a
