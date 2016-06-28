@@ -60,4 +60,35 @@ testa = evalTCM1 (stypecheck a at)
 ---          (g : (x : A) -> (y : B x) -> C x y) -> (f : (x : A) -> B x) -> (x : A) -> C x (f x))
 tests = evalTCM1 (stypecheck s st)
 
+forCheckT1 :: Syntax
+forCheckT1 = forall "A"
+           $ forall "B"
+           $ Pi "f" (forall "x" $ App "B" [var "x"])
+           $ Pi "C" ((var "A" ~> Star) ~> Star)
+           $ Pi "z" (App "C" [var "B"])
+           $ App "C" [var "B"]
+
+forCheck1 :: Syntax
+forCheck1 = Lam "A" $ Lam "B" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
+
+-- Right (\A -> \B -> \f -> \C -> \z -> z,
+--         (A : Type) -> (B : A -> Type) -> (f : (x : A) -> B x) ->
+--           (C : (A -> Type) -> Type) -> (z : C B) -> C B)
+testCheck1 = evalTCM1 (stypecheck forCheck1 forCheckT1)
+
 getSyntax t = evalTCM1 (trackFreesToTCM $ toCTerm t)
+
+forCheckT2 :: Syntax
+forCheckT2 = forall "A"
+           $ Pi "f" (forall "B" $ forall "x" $ App "B" [var "x"])
+           $ Pi "C" ((Pi "B" (var "A" ~> Star) $ forall "x" $ App "B" [var "x"]) ~> Star)
+           $ Pi "z" (App "C" [var "f"])
+           $ App "C" [var "f"]
+
+forCheck2 :: Syntax
+forCheck2 = Lam "A" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
+
+-- Right (\A -> \f -> \C -> \z -> z
+--         (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
+--           (C : ((B : A -> Type) -> (x : A) -> B x) -> Type) -> (z : C f) -> C f)
+testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)

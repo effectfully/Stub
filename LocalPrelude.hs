@@ -43,6 +43,8 @@ return2 = return . return
 lift2 :: (MonadTrans t2, MonadTrans t1, Monad m, Monad (t1 m)) => m a -> t2 (t1 m) a
 lift2 = lift . lift
 
+lift3 a = lift (lift (lift a))
+
 (<.>) :: (Functor f) => (b -> c) -> (a -> f b) -> a -> f c 
 g <.> f = fmap g . f
 
@@ -150,14 +152,20 @@ xs `isSublistOf` ys = all (`elem` ys) xs
 isUniqueSublistOf :: Eq a => [a] -> [a] -> Bool
 isUniqueSublistOf xs ys = all (`isUniqueIn` ys) xs
 
+maybeT :: (Monad m) => m b -> (a -> m b) -> MaybeT m a -> m b
+maybeT b f m = runMaybeT m >>= maybe b f
+
 fromMaybeT :: (Monad m) => m a -> MaybeT m a -> m a
-fromMaybeT a m = runMaybeT m >>= maybe a return
+fromMaybeT a = maybeT a return
 
 withReaderTM :: (Monad m) => (s -> m r) -> ReaderT r m a -> ReaderT s m a
 withReaderTM f a = ReaderT $ f >=> runReaderT a
 
 readerToState :: (Functor m) => (s -> r) -> ReaderT r m a -> StateT s m a
 readerToState f r = StateT $ \e -> (runReaderT r (f e)) <. e
+
+localState :: (Monad m) => s -> StateT s m a -> StateT s m a
+localState s' a = get >>= \s -> put s' *> a <* put s
 
 modifyM :: (Monad m) => (s -> m s) -> StateT s m ()
 modifyM f = StateT $ (,) () <.> f

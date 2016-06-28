@@ -1,3 +1,5 @@
+{-# LANGUAGE RecursiveDo #-}
+
 module TCM where
 
 import LocalPrelude
@@ -39,14 +41,8 @@ evalTCM = (\(x, (_, _, (_, mks))) -> (x, mks)) <.> runTCM
 trackFreesToTCM :: (Functor m) => TrackFreesT m a -> TCMT m a
 trackFreesToTCM = readerToState (map fst)
 
-withTyped :: (Monad m) => Name -> VType -> Int -> TCMT m a -> TCMT m a
-withTyped n a i k = modify ((i, (n, a)) :) *> k <* modify tail
-
-freshTyped :: (Monad m) => Name -> VType -> (Int -> TCMT m a) -> TCMT m a
-freshTyped n a k = lift getFresh >>= \i -> withTyped n a i (k i)
-
-freshTypedVar :: (Monad m) => Name -> VType -> (VTerm -> TCMT m a) -> TCMT m a
-freshTypedVar n a k = freshTyped n a (k . vvar)
+withTyped :: (Monad m) => Name -> Int -> VType -> TCMT m a -> TCMT m a
+withTyped n i a k = modify (++ [(i, (n, a))]) *> k <* modify init
 
 nameVTypeOf :: (Monad m) => Head -> TCMT m (Name, VType)
 nameVTypeOf h = do
@@ -58,7 +54,7 @@ nameVTypeOf h = do
     (Var i)       -> lookupContext i inas
 
 nameQTypeOf :: (Monad m) => Head -> TCMT m (Name, QType)
-nameQTypeOf h = nameVTypeOf h >>>= secondM quote
+nameQTypeOf = second quote <.> nameVTypeOf
 
 vnormTypes :: TCM ()
 vnormTypes = modifyM $ traverse (secondM (secondM vnorm))
@@ -69,8 +65,7 @@ newMetaKindBy k n mk a = do
   lift $ do
     (i, das, (m, mas)) <- get
     let nm = '?' : n ++ show m
-    b <- craftVPis inas a
-    put (i, das, (m + 1, (nm, (b, mk)) : mas))
+    put (i, das, (m + 1, (nm, (craftVPis inas a, mk)) : mas))
     return . k nm $ map fst inas
 
 newQMetaKind :: (Monad m) => Name -> MetaKind -> VType -> TCMT m QTerm
@@ -85,11 +80,10 @@ newQGuarded es = newQMetaKind "" . Guarded es
 newVGuarded :: (Monad m) => Equations -> QTerm -> VType -> TCMT m VTerm
 newVGuarded es = newVMetaKind "" . Guarded es
 
-newQCheck :: (Monad m) => CTerm -> VType -> TCMT m QTerm
-newQCheck = newQMetaKind "" . Check
-
-newVCheck :: (Monad m) => CTerm -> VType -> TCMT m VTerm
-newVCheck = newVMetaKind "" . Check
+newQCheck :: (Monad m) => VType -> Int -> CTerm -> VType -> TCMT m QTerm
+newQCheck b l t a = do
+  inas <- get
+  newQMetaKind "" (Check b l (craftCLams (vconToCCon inas) t)) a
 
 newQMeta :: (Monad m) => Name -> VType -> TCMT m QTerm
 newQMeta n = newQMetaKind n Unknown
@@ -103,8 +97,12 @@ newTypedQMetaKind mk = do
   x <- newQMetaKind "" mk a
   return (x, a)
 
-newTypedQCheck :: (Monad m) => CTerm -> TCMT m (QTerm, VType)
-newTypedQCheck = newTypedQMetaKind . Check
+newTypedQCheck :: (Monad m) => VType -> Int -> CTerm -> TCMT m (QTerm, VType)
+newTypedQCheck b l t = do
+  inas <- get
+  a <- newVMeta "" VStar
+  x <- newQCheck b l t a
+  return (x, a)
 
 newTypedQMeta :: (Monad m) => TCMT m (QTerm, VType)
 newTypedQMeta = newTypedQMetaKind Unknown
@@ -115,48 +113,63 @@ vguardedWhen es t a = newVGuarded es t a
 
 qguardedWhen :: (Monad m) => Equations -> QTerm -> VType -> TCMT m QTerm
 qguardedWhen [] t a = return t
-qguardedWhen es t a = newQGuarded es t a
+qguardedWhen es t a = traceShow t $ newQGuarded es t a
 
 --------------------
+
+solveConstraints :: TCM ()
+solveConstraints = do
+  (i, das, (m, mas)) <- lift get
+  forM_ mas $ \(n, (a, mk)) -> case mk of
+    Guarded es t -> do
+      es' <- concat <$> traverse (uncurry vunify) es
+      lift $ if null es' then qsolveMeta n t else updateMeta n (Guarded es' t)
+    Check b l t  -> do
+      nb <- lift $ vnorm b
+      when (countVPis nb >= l) . localState [] $ mdo
+        na <- lift $ vnorm a
+        lift $ qsolveMeta n t'
+        t' <- check t na
+        return ()
+    _            -> return ()
 
 -- TODO: metas must form a DAG.
 tryMiller :: QTerm -> QTerm -> MaybeT TCM ()
 tryMiller (QApp (Flex Meta n) ts) s | Just lvs <- traverse unQVar ts = do
   True <- lift2 $ checkIsSolvable n
-  lift $ freeVars s `isUniqueSublistOf` lvs ?>
+  lift $ freeVars s `isUniqueSublistOf` lvs ?> do
     (traverse (\i -> i .> nameQTypeOf (Var i)) lvs >>>= qsolveMeta n . flip craftQLams s)
+    solveConstraints
 tryMiller  t                      s = mzero
 
 tryMillerBoth :: QTerm -> QTerm -> MaybeT TCM ()
 tryMillerBoth t s = tryMiller t s <|> tryMiller s t
 
-tryUnifyChildsOf :: QTerm -> QTerm -> MaybeT TCM Equations
-tryUnifyChildsOf t@(QApp _ ts) s@(QApp _ ss) = lift $
-  maybe (if all isForeverNeutral (ts ++ ss) -- We can do better.
-           then lift2 $ throwE "different number of arguments"
-           else mzero)
-        (concat <.> sequence)
+tryUnifyChilds :: Bool -> QSpine -> QSpine -> MaybeT TCM Equations
+tryUnifyChilds b ts ss = 
+  maybe (b ?> lift3 (throwE "different number of arguments"))
+        (lift . (concat <.> sequence))
         (zipWithEq qunify ts ss)
 
 -- TODO: intersections stuff.
 tryFlexAny :: QTerm -> QTerm -> MaybeT TCM ()
 tryFlexAny t@(QApp (Flex f n) ts) s@(QApp (Flex g m) ss) =
   n == m ?> do
-    [] <- tryUnifyChildsOf t s
+    [] <- tryUnifyChilds (all isForeverNeutral (ts ++ ss)) ts ss
     return ()
 tryFlexAny t                      s                      = tryMillerBoth t s
 
 tryQAppUnify :: QTerm -> QTerm -> MaybeT TCM Equations
 tryQAppUnify t@(QApp (Var i) ts) s@(QApp (Var j) ss) =
-  if i /= j
-    then lift . lift2 $ throwE "different variables in heads"
-    else tryUnifyChildsOf t s
+  if i == j
+    then tryUnifyChilds True ts ss
+    else lift3 $ throwE "different variables in heads"
 tryQAppUnify t                   s                   = [] <$ tryFlexAny t s
 
 tryEtaExpandUnifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations)
                       -> VTerm -> VTerm -> MaybeT TCM Equations
-tryEtaExpandUnifyWith cont t@(VLam n a k) s = lift $ unifyWith cont t (etaExpand n a s)
-tryEtaExpandUnifyWith cont _              _ = mzero
+tryEtaExpandUnifyWith cont t@(VLam n i a k) s = lift $ unifyWith cont t (etaExpand n i a s)
+tryEtaExpandUnifyWith cont _                _ = mzero
 
 tryEtaExpandUnifyWithBoth :: (VTerm -> VTerm -> MaybeT TCM Equations)
                           -> VTerm -> VTerm -> MaybeT TCM Equations
@@ -165,15 +178,17 @@ tryEtaExpandUnifyWithBoth cont t s =  tryEtaExpandUnifyWith cont t s
 
 -- This really should be type-directed.
 unifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations) -> VTerm -> VTerm -> TCM Equations
-unifyWith cont  VStar          VStar         = return []
-unifyWith cont (VPi  n a1 b1) (VPi  m a2 b2) = do
+unifyWith cont  VStar            VStar           = return []
+unifyWith cont (VPi  n i a1 b1) (VPi  m j a2 b2) = do
   es <- unifyWith cont a1 a2
-  (es ++) <.> freshTyped n a1 $ \i -> do
+  (es ++) <.> withTyped n i a1 $ do
     gv <- vguardedWhen es (qvar i) a2
-    unifyWith cont (b1 (vvar i)) (b2 gv)
-unifyWith cont (VLam n a1 k1) (VLam m a2 k2) =
-  freshTypedVar n a1 $ \v -> unifyWith cont (k1 v) (k2 v)
-unifyWith cont  t              s             =
+    nb1 <- lift $ vnorm (b1 (vvar i))
+    nb2 <- lift $ vnorm (b2  gv)
+    unifyWith cont nb1 nb2
+unifyWith cont (VLam n i a1 k1) (VLam m j a2 k2) =
+  withTyped n i a1 $ unifyWith cont (k1 (vvar i)) (k2 (vvar i))
+unifyWith cont  t                s               =
   fromMaybeT (return [(t, s)]) $ tryEtaExpandUnifyWithBoth cont t s <|> cont t s
 
 evalUnify :: QTerm -> QTerm -> TCM Equations
@@ -183,60 +198,39 @@ qunify :: QTerm -> QTerm -> TCM Equations
 qunify t s = fromMaybeT (evalUnify t s) $ tryQAppUnify t s
 
 tryQuoteUnify :: VTerm -> VTerm -> MaybeT TCM Equations
-tryQuoteUnify t s = tryQAppUnify <$> lift2 (quote t) <&> lift2 (quote s)
+tryQuoteUnify t s = tryQAppUnify (quote t) (quote s)
 
 vunify :: VTerm -> VTerm -> TCM Equations
 vunify = unifyWith tryQuoteUnify
 
 --------------------
 
--- A guard/check can't be resolved during unification/checking,
--- because it's not in scope there, so we're safe.
--- This is disgusting.
-solveConstraints :: TCM ()
-solveConstraints = do
-  (i, das, (m, mas)) <- lift get
-  forM_ mas $ \(n, (a, mk)) -> case mk of
-    Guarded es t -> do
-      es' <- concat <$> traverse (uncurry vunify) es
-      lift $ if null es'
-         then qsolveMeta n t
-         else updateMeta n (Guarded es' t)
-    Check t      -> undefined {-do
-      na <- lift $ vnorm a
-      tc <- tryCheck t a
-      lift $ case tc of
-        Right t' -> qsolveMeta n t'
-        Left _   -> updateMeta n (Check t) -} -- na
-    _            -> return ()
-
 unify :: VTerm -> VTerm -> TCM Equations
-unify t s = vunify t s {- <* solveConstraints -} <* vnormTypes
+unify t s = vunify t s <* vnormTypes
 
 infer :: CTerm -> TCM (QTerm, VType)
 infer    CStar        = return (QStar, VStar)
 infer   (CPi n i a b) = do
   (na, ena) <- checkEval a VStar
-  withTyped n ena i $ do
+  withTyped n i ena $ do
     nb <- check b VStar
     return (QPi n i na nb, VStar)
 infer   (CLam n i t)  = lift2 $ throwE "lambdas are non-inferrable"
 infer t@(CApp h ts)   = do
   b <- snd <$> nameVTypeOf h
-  pis <- lift $ countVPis b
-  if pis < length ts
-    then newTypedQCheck t
+  let l = length ts
+  if countVPis b < l
+    then newTypedQCheck b l t
     else saturate (QApp h) b ts
 infer    CMeta        = newTypedQMeta
 
 saturate :: (QSpine -> QTerm) -> VType -> CSpine -> TCM (QTerm, VType)
-saturate k  a           []    = return (k [], a)
-saturate k (VPi n a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (nx:)) (b enx) xs
+saturate k  a             []    = return (k [], a)
+saturate k (VPi n i a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (nx:)) (b enx) xs
 
 check :: CTerm -> VType -> TCM QTerm
-check (CLam n i t) (VPi m a b) =
-  QLam n i <$> lift (quote a) <*> withTyped n a i (check t (b (vvar i)))
-check  t            a          = do
+check (CLam n i t) (VPi m j a b) = QLam n i (quote a) <$> withTyped n i a (check t (b (vvar i)))
+check  t            a            = do
   (t', a') <- infer t
   es <- unify a' a
   qguardedWhen es t' a
@@ -245,8 +239,7 @@ checkEval :: CTerm -> VType -> TCM (QTerm, VTerm)
 checkEval t a = do
   ct   <- check t a
   ect  <- lift $ eval ct
-  qect <- lift $ quote ect
-  return (qect, ect)
+  return (quote ect, ect)
 
 typecheck :: CTerm -> CType -> TCM (QTerm, QTerm)
 typecheck t a = do

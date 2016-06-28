@@ -36,9 +36,9 @@ type VSpine = [VTerm] -- Spines should be strict, right?
 type VCon   = Env Int (Name, VType) -- `IntMap`.
 
 data VTerm = VStar
-           | VPi !Name VType (VTerm -> VType)
+           | VPi  !Name !Int VType (VTerm -> VType)
            | VHead !Head
-           | VLam !Name VType (VTerm -> VTerm)
+           | VLam !Name !Int VType (VTerm -> VTerm)
            | VApp VTerm VTerm
 
 fromHead :: (Int -> a) -> (Flex -> Name -> a) -> Head -> a
@@ -57,16 +57,22 @@ vdef = vflex Def
 vmeta :: Name -> VTerm
 vmeta = vflex Meta
 
-{-craftVLams :: VSpine -> (VSpine -> VTerm) -> VTerm
-craftVLams  []    k = k []
-craftVLams (a:as) k = VLam "" a $ \x -> craftVLams as (k . (x:))-}
-
 appVSpine :: VTerm -> VSpine -> VTerm
-appVSpine (VLam _ _ k) (x:xs) = appVSpine (k x) xs
-appVSpine  t            xs    = foldl' VApp t xs
+appVSpine (VLam _ _ _ k) (x:xs) = appVSpine (k x) xs
+appVSpine  t              xs    = foldl' VApp t xs
 
-etaExpand :: Name -> VType -> VTerm -> VTerm
-etaExpand n a = VLam n a . VApp
+etaExpand :: Name -> Int -> VType -> VTerm -> VTerm
+etaExpand n i a = VLam n i a . VApp
+
+countVPis :: VType -> Int
+countVPis (VPi n i a b) = countVPis (b (vvar i)) + 1
+countVPis  _            = 0
+
+craftVPis :: VCon -> VType -> VType
+craftVPis inas = go inas (\vs -> unVar >=> flip lookup vs) . quote where
+  go :: VCon -> (Env Int VTerm -> Head -> Maybe VTerm) -> QType -> VType
+  go  []                  k a = pureEval k a
+  go ((i, (n, a)) : inas) k b = VPi n i a $ \x -> go inas (k . ((i, x):)) b
 
 --------------------
 
@@ -120,14 +126,22 @@ pureEval :: (Env Int VTerm -> Head -> Maybe VTerm) -> QTerm -> VTerm
 pureEval (!) = go [] where
   go :: Env Int VTerm -> QTerm -> VTerm
   go vs  QStar         = VStar
-  go vs (QPi  n i a b) = VPi  n (go vs a) (\v -> go ((i, v) : vs) b)
-  go vs (QLam n i a t) = VLam n (go vs a) (\v -> go ((i, v) : vs) t)
+  go vs (QPi  n i a b) = VPi  n i (go vs a) (\v -> go ((i, v) : vs) b)
+  go vs (QLam n i a t) = VLam n i (go vs a) (\v -> go ((i, v) : vs) t)
   go vs (QApp h ts)    = fromMaybe (VHead h) (vs ! h) `appVSpine` map (go vs) ts
+
+quote :: VTerm -> QTerm
+quote  VStar         = QStar
+quote (VPi  n i a b) = QPi  n i (quote a) (quote (b (vvar i)))
+quote (VHead h)      = QApp h []
+quote (VLam n i a k) = QLam n i (quote a) (quote (k (vvar i)))
+quote (VApp f x)     = quote f `spineQApp` quote x
 
 --------------------
 
 type CType  = CTerm
 type CSpine = [CTerm]
+type CCon   = Env Int Name
 
 data CTerm = CStar
            | CPi  !Name !Int CType CType
@@ -139,12 +153,19 @@ data CTerm = CStar
 type Equations  = [(VTerm, VTerm)]
 
 data MetaKind = Guarded Equations QTerm
-              | Check CTerm
+              | Check VType Int CTerm
               | Solution VTerm
               | Unknown
 
 cvar :: Int -> CTerm
 cvar i = CApp (Var i) []
+
+craftCLams :: CCon -> CTerm -> CTerm
+craftCLams  []            t = t
+craftCLams ((i, n) : ins) t = CLam n i (craftCLams ins t)
+
+vconToCCon :: VCon -> CCon
+vconToCCon = map (second fst)
 
 isSolvable :: MetaKind -> Bool
 isSolvable Unknown = True
@@ -163,21 +184,22 @@ data Syntax = Star
             | (:?)
 
 -- Closed terms only.
-toSyntax :: QTerm -> Syntax
-toSyntax = go [] where
-  go :: Env Int Name -> QTerm -> Syntax 
-  go ns  QStar         = Star
-  go ns (QPi  n i a b) = Pi  n (go ns a) (go ((i, n) : ns) b)
-  go ns (QLam n i a t) = Lam n (go ((i, n) : ns) t)
-  go ns (QApp h ts)    = App (fromHead (fromJust . flip lookup ns) (const id) h) (map (go ns) ts)
-
 {-toSyntax :: QTerm -> Syntax
 toSyntax = go [] where
   go :: Env Int Name -> QTerm -> Syntax 
   go ns  QStar         = Star
   go ns (QPi  n i a b) = Pi  n (go ns a) (go ((i, n) : ns) b)
   go ns (QLam n i a t) = Lam n (go ((i, n) : ns) t)
-  go ns (QApp h ts)    = App (fromHead (\i -> fromMaybe ("Var " ++ show i) $ lookup i ns) (const id) h) (map (go ns) ts)-}
+  go ns (QApp h ts)    = App (fromHead (fromJust . flip lookup ns) (const id) h) (map (go ns) ts)
+-}
+
+toSyntax :: QTerm -> Syntax
+toSyntax = go [] where
+  go :: Env Int Name -> QTerm -> Syntax 
+  go ns  QStar         = Star
+  go ns (QPi  n i a b) = Pi  n (go ns a) (go ((i, n) : ns) b)
+  go ns (QLam n i a t) = Lam n (go ((i, n) : ns) t)
+  go ns (QApp h ts)    = App (fromHead (\i -> fromMaybe ("Var " ++ show i) $ lookup i ns) (const id) h) (map (go ns) ts)
 
 parens :: String -> String
 parens s
@@ -191,3 +213,6 @@ instance Show Syntax where
   show (Lam n t)    = concat ["\\", n, " -> ", show t]
   show (App n [])   = n
   show (App n ts)   = concat . intersperse " " $ n : map (parens . show) ts
+
+instance Show VTerm where
+  show = show . quote

@@ -37,10 +37,6 @@ vsolveMeta n = updateMeta n . Solution
 qsolveMeta :: (Monad m) => Name -> QTerm -> ContextT m ()
 qsolveMeta n t = eval t >>= vsolveMeta n
 
-countVPis :: (Monad m) => VType -> ContextT m Int
-countVPis (VPi n a b) = freshVar $ \v -> succ <$> countVPis (b v)
-countVPis  _          = return 0
-
 -- `lookup n` doesn't check whether `n` is in scope.
 -- It must be, but we'd better get an error if it's not.
 getLookup :: (Monad m) => ContextT m (Env Int VTerm -> Head -> Maybe VTerm)
@@ -54,24 +50,8 @@ getLookup = do
 eval :: (Monad m) => QTerm -> ContextT m VTerm
 eval t = flip pureEval t <$> getLookup
 
-quote :: (Monad m) => VTerm -> ContextT m QTerm
-quote  VStar       = return QStar
-quote (VPi  n a b) = fresh $ \i -> QPi  n i <$> quote a <*> quote (b (vvar i))
-quote (VHead h)    = return $ QApp h []
-quote (VLam n a k) = fresh $ \i -> QLam n i <$> quote a <*> quote (k (vvar i))
-quote (VApp f x)   = spineQApp <$> quote f <*> quote x
-
-craftVPis :: (Monad m) => VCon -> VType -> ContextT m VType
-craftVPis inas = go inas (\vs -> unVar >=> flip lookup vs) <.> quote where
-  go :: VCon -> (Env Int VTerm -> Head -> Maybe VTerm) -> QType -> VType
-  go  []                  k a = pureEval k a
-  go ((i, (n, a)) : inas) k b = VPi n a $ \x -> go inas (k . ((i, x):)) b
-
 qnorm :: (Monad m) => QTerm -> ContextT m QTerm
-qnorm = eval >=> quote
+qnorm = quote <.> eval
 
 vnorm :: (Monad m) => VTerm -> ContextT m VTerm
-vnorm = quote >=> eval
-
-showVTerm :: (Monad m) => VTerm -> ContextT m String
-showVTerm = show . toSyntax <.> quote
+vnorm = eval . quote
