@@ -56,8 +56,11 @@ nameVTypeOf h = do
 nameQTypeOf :: (Monad m) => Head -> TCMT m (Name, QType)
 nameQTypeOf = second quote <.> nameVTypeOf
 
-vnormTypes :: TCM ()
-vnormTypes = modifyM $ traverse (secondM (secondM vnorm))
+normVarTypes :: TCM ()
+normVarTypes = modifyM $ traverse . secondM . secondM $ vnorm
+
+normMetaTypes :: TCM ()
+normMetaTypes = lift . readModifyM $ thirdM . secondM . traverse . secondM . firstM $ vnorm
 
 newMetaKindBy :: (Monad m) => (Name -> Frees -> a) -> Name -> MetaKind -> VType -> TCMT m a
 newMetaKindBy k n mk a = do
@@ -127,18 +130,19 @@ solveConstraints = do
     Check b l t  -> do
       nb <- lift $ vnorm b
       when (countVPis nb >= l) . localState [] $ mdo
-        na <- lift $ vnorm a
         lift $ qsolveMeta n t'
-        t' <- check t na
+        t' <- check t a
         return ()
     _            -> return ()
 
--- TODO: metas must form a DAG.
+-- TODO: occurs check and friends.
 tryMiller :: QTerm -> QTerm -> MaybeT TCM ()
 tryMiller (QApp (Flex Meta n) ts) s | Just lvs <- traverse unQVar ts = do
   True <- lift2 $ checkIsSolvable n
   lift $ freeVars s `isUniqueSublistOf` lvs ?> do
-    (traverse (\i -> i .> nameQTypeOf (Var i)) lvs >>>= qsolveMeta n . flip craftQLams s)
+    inas <- traverse (\i -> i .> nameQTypeOf (Var i)) lvs
+    lift $ qsolveMeta n (craftQLams inas s)
+    normMetaTypes
     solveConstraints
 tryMiller  t                      s = mzero
 
@@ -206,7 +210,7 @@ vunify = unifyWith tryQuoteUnify
 --------------------
 
 unify :: VTerm -> VTerm -> TCM Equations
-unify t s = vunify t s <* vnormTypes
+unify t s = vunify t s <* normVarTypes
 
 infer :: CTerm -> TCM (QTerm, VType)
 infer    CStar        = return (QStar, VStar)

@@ -103,6 +103,8 @@ firstM f (x, y) = f x <. y
 secondM :: Functor f => (b -> f c) -> (a, b) -> f (a, c)
 secondM g (x, y) = x .> g y
 
+thirdM :: Functor f => (c -> f d) -> (a, b, c) -> f (a, b, d)
+thirdM h (x, y, z) = (\w -> (x, y, w)) <$> h z
 
 
 both :: (a -> Bool) -> a -> a -> Bool
@@ -162,10 +164,13 @@ withReaderTM :: (Monad m) => (s -> m r) -> ReaderT r m a -> ReaderT s m a
 withReaderTM f a = ReaderT $ f >=> runReaderT a
 
 readerToState :: (Functor m) => (s -> r) -> ReaderT r m a -> StateT s m a
-readerToState f r = StateT $ \e -> (runReaderT r (f e)) <. e
+readerToState f r = StateT $ \e -> runReaderT r (f e) <. e
 
 localState :: (Monad m) => s -> StateT s m a -> StateT s m a
 localState s' a = get >>= \s -> put s' *> a <* put s
 
 modifyM :: (Monad m) => (s -> m s) -> StateT s m ()
 modifyM f = StateT $ (,) () <.> f
+
+readModifyM :: (Monad m) => (s -> StateT s m s) -> StateT s m ()
+readModifyM f = get >>= f >>= put 

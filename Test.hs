@@ -88,7 +88,51 @@ forCheckT2 = forall "A"
 forCheck2 :: Syntax
 forCheck2 = Lam "A" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
 
--- Right (\A -> \f -> \C -> \z -> z
+-- Right (\A -> \f -> \C -> \z -> z,
 --         (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
 --           (C : ((B : A -> Type) -> (x : A) -> B x) -> Type) -> (z : C f) -> C f)
 testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
+
+-- The expression
+
+-- ∀ A -> (f : ∀ B x -> B x) -> (C : (B : A -> Type) -> ∀ x -> B x) -> C f -> C f
+
+-- is elaborated to
+
+-- (A : α) -> (f : (B : β) -> (x : γ) -> B x) ->
+--   (C : (B : A -> Type) -> (x : δ) -> B x) -> C f -> C f
+
+-- `α` is solved by `α ≡ Type`.
+
+-- `B x` can't type check, because `B` doesn't have enough Πs
+-- in its type, so it's replaced by `ε A B x` which will compute to `B x` as soon as
+-- there are enough Πs and `B x` is successfully type checked.
+
+-- `δ` is solved by `δ ≡ A`.
+
+-- The expression now is
+
+-- (A : Type) -> (f : (B : β) -> (x : γ) -> ε A B x) ->
+--   (C : (B : A -> Type) -> (x : A) -> B x) -> C f -> C f
+
+-- An attempt to Type check `C f` forces unification of these two types:
+
+-- (B : β)         -> (x : γ) -> ε A B x
+-- (B : A -> Type) -> (x : A) -> B x)
+
+-- `β` is solved by `β ≡ A -> Type`.
+
+-- Now there are enough Πs, hence `ε A B x` is type checked, which gives `α ≡ A` and
+-- `ε ≡ \A B x -> B x`. It only remains to unify
+
+-- (x : A) -> B x
+-- (x : A) -> B x
+
+-- which is trivial.
+
+-- The final `C f` is type checked with all metas being already solved, so it's trivial too.
+
+-- The fully elaborated expression:
+
+-- (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
+--   (C : (B : A -> Type) -> (x : A) -> B x) -> C f -> C f
