@@ -99,31 +99,31 @@ testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
 
 -- is elaborated to
 
--- (A : α) -> (f : (B : β) -> (x : γ) -> B x) ->
---   (C : (B : A -> Type) -> (x : δ) -> B x) -> C f -> C f
+-- (A : ?0) -> (f : (B : ?1 A) -> (x : ?2 A B) -> B x) ->
+--   (C : (B : A -> Type) -> (x : ?3 A f B) -> B x) -> C f -> C f
 
--- `α` is solved by `α ≡ Type`.
+-- `?0` is solved by `?0 ≡ Type`.
 
--- `B x` can't type check, because `B` doesn't have enough Πs
--- in its type, so it's replaced by `ε A B x` which will compute to `B x` as soon as
+-- `B x` can't type check, because `B` doesn't have enough Πs in its type,
+-- so it's replaced by `?4 A B x` which will compute to `B x` as soon as
 -- there are enough Πs and `B x` is successfully type checked.
 
--- `δ` is solved by `δ ≡ A`.
+-- `?3` is solved by `?3 ≡ \A f B -> A`.
 
 -- The expression now is
 
--- (A : Type) -> (f : (B : β) -> (x : γ) -> ε A B x) ->
+-- (A : Type) -> (f : (B : ?1 A) -> (x : ?2 A B) -> ?4 A B x) ->
 --   (C : (B : A -> Type) -> (x : A) -> B x) -> C f -> C f
 
 -- An attempt to Type check `C f` forces unification of these two types:
 
--- (B : β)         -> (x : γ) -> ε A B x
--- (B : A -> Type) -> (x : A) -> B x)
+-- (B : ?1 A)      -> (x : ?2 A B) -> ?4 A B x
+-- (B : A -> Type) -> (x : A)      -> B x
 
--- `β` is solved by `β ≡ A -> Type`.
+-- `?1` is solved by `?1 ≡ \A -> A -> Type`.
 
--- Now there are enough Πs, hence `ε A B x` is type checked, which gives `α ≡ A` and
--- `ε ≡ \A B x -> B x`. It only remains to unify
+-- Now there are enough Πs, so `?4 A B x` is type checked, which gives `?2 ≡ \A B -> A` and
+-- `?4 ≡ \A B x -> B x`. It only remains to unify
 
 -- (x : A) -> B x
 -- (x : A) -> B x
