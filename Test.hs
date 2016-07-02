@@ -7,7 +7,7 @@ import TCM
 
 infixr 5 ~>
 
-forall :: Name -> Syntax -> Syntax
+forall :: String -> Syntax -> Syntax
 forall n = Pi n (:?)
 
 (~>) :: Syntax -> Syntax -> Syntax
@@ -76,7 +76,7 @@ forCheck1 = Lam "A" $ Lam "B" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
 --           (C : (A -> Type) -> Type) -> (z : C B) -> C B)
 testCheck1 = evalTCM1 (stypecheck forCheck1 forCheckT1)
 
-getSyntax t = evalTCM1 (trackFreesToTCM $ toCTerm t)
+getSyntax = evalTCM1 . lift . toCTerm
 
 forCheckT2 :: Syntax
 forCheckT2 = forall "A"
@@ -91,7 +91,7 @@ forCheck2 = Lam "A" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
 -- Right (\A -> \f -> \C -> \z -> z,
 --         (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
 --           (C : ((B : A -> Type) -> (x : A) -> B x) -> Type) -> (z : C f) -> C f)
-testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
+testCheck2 = runTCM (stypecheck forCheck2 forCheckT2)
 
 -- The expression
 
@@ -115,7 +115,7 @@ testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
 -- (A : Type) -> (f : (B : ?1 A) -> (x : ?2 A B) -> ?4 A B x) ->
 --   (C : (B : A -> Type) -> (x : A) -> B x) -> C f -> C f
 
--- An attempt to Type check `C f` forces unification of these two types:
+-- An attempt to type check `C f` forces unification of these two types:
 
 -- (B : ?1 A)      -> (x : ?2 A B) -> ?4 A B x
 -- (B : A -> Type) -> (x : A)      -> B x

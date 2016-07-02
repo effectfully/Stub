@@ -106,7 +106,6 @@ secondM g (x, y) = x .> g y
 thirdM :: Functor f => (c -> f d) -> (a, b, c) -> f (a, b, d)
 thirdM h (x, y, z) = (\w -> (x, y, w)) <$> h z
 
-
 both :: (a -> Bool) -> a -> a -> Bool
 both p x y = p x == p y
 
@@ -174,3 +173,8 @@ modifyM f = StateT $ (,) () <.> f
 
 readModifyM :: (Monad m) => (s -> StateT s m s) -> StateT s m ()
 readModifyM f = get >>= f >>= put 
+
+parens :: String -> String
+parens s
+  | ' ' `elem` s = "(" ++ s ++ ")"
+  | otherwise    = s
