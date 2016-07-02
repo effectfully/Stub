@@ -43,7 +43,7 @@ newMetaKindBy k n mk a = do
   inas <- get
   lift $ do
     (i, das, (m, mas)) <- get
-    put (i, das, (m + 1, (m, (vcraft VPi inas a, mk)) : mas))
+    put (i, das, (m + 1, mas ++ [(m, (vcraft VPi inas a, mk))]))
     return . k (Entry n m) $ map (\(i, (n, _)) -> Entry n i) inas
 
 newQMetaKind :: (Monad m) => String -> MetaKind -> VType -> TCMT m QTerm
@@ -102,7 +102,7 @@ solveConstraints :: TCM ()
 solveConstraints = do
   (i, das, (m, mas)) <- lift get
   forM_ mas $ \(j, (a, mk)) -> case mk of
-    Guarded es t -> traceShow es $ do
+    Guarded es t -> do
       es' <- concat <$> traverse (\(x, y) -> vunify <$> lift (vnorm x) <&> lift (vnorm y)) es
       lift $ if null es' then qsolveMeta j t else updateMeta j (Guarded es' t)
     Check b l t  -> do
@@ -169,7 +169,7 @@ unifyWith cont (VPi  e a1 b1) (VPi  _ a2 b2) = do
     nb1 <- lift $ vnorm (b1 (vvar e))
     nb2 <- lift $ vnorm (b2  gv)
     unifyWith cont nb1 nb2
-    -- unifyWith cont (b1 (vvar e)) (b2 gv)
+    -- unifyWith cont (b1 (vvar e)) (b2 gv) -- For testing.
 unifyWith cont (VLam e a1 k1) (VLam _ a2 k2) =
   withTyped e a1 $ unifyWith cont (k1 (vvar e)) (k2 (vvar e))
 unifyWith cont  t              s             =

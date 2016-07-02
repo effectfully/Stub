@@ -91,7 +91,7 @@ forCheck2 = Lam "A" $ Lam "f" $ Lam "C" $ Lam "z" $ var "z"
 -- Right (\A -> \f -> \C -> \z -> z,
 --         (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
 --           (C : ((B : A -> Type) -> (x : A) -> B x) -> Type) -> (z : C f) -> C f)
-testCheck2 = runTCM (stypecheck forCheck2 forCheckT2)
+testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
 
 -- The expression
 
