@@ -191,15 +191,11 @@ instance Show Syntax where
   show (App n ts)   = concat . intersperse " " $ n : map (parens . show) ts
   show (:?)         = "_"
 
--- qtermToCTerm
-qtermToSyntax :: QTerm -> Syntax
-qtermToSyntax = go [] where
-  go :: Env Int String -> QTerm -> Syntax 
-  go ns  QStar                 = Star
-  go ns (QPi  (Entry n i) a b) = Pi  n (go ns a) (go ((i, n) : ns) b)
-  go ns (QLam (Entry n i) a t) = Lam n (go ((i, n) : ns) t)
-  go ns (QApp h ts)            =
-    App (fromHead (\(Entry n i) -> fromMaybe ('\'':n) (lookup i ns)) show h) (map (go ns) ts)
+qtermToCTerm :: QTerm -> CTerm
+qtermToCTerm  QStar       = CStar
+qtermToCTerm (QPi  e a b) = CPi  e (qtermToCTerm a) (qtermToCTerm b)
+qtermToCTerm (QLam e a t) = CLam e (qtermToCTerm t)
+qtermToCTerm (QApp h ts)  = CApp h (map qtermToCTerm ts)
 
 ctermToSyntax :: CTerm -> Syntax
 ctermToSyntax = go [] where
@@ -211,11 +207,11 @@ ctermToSyntax = go [] where
     App (fromHead (\(Entry n i) -> fromMaybe ('\'':n) (lookup i ns)) show h) (map (go ns) ts)
   go ns  CMeta                 = (:?)
 
+instance Show CTerm where
+  show = show . ctermToSyntax
+
 instance Show QTerm where
-  show = show . qtermToSyntax
+  show = show . qtermToCTerm
 
 instance Show VTerm where
   show = show . quote
-
-instance Show CTerm where
-  show = show . ctermToSyntax

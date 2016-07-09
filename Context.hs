@@ -8,7 +8,7 @@ type MetaEnv    = (Int, Env Int (VType, MetaKind))
 type ContextT m = StateT (Int, DefEnv, MetaEnv) (ExceptT String m)
 
 lookupContext :: (Monad m, Eq a, Show a) => a -> Env a b -> ContextT m b
-lookupContext x = maybe (lift . throwE $ "panic: " ++ show x ++ " is not found") return . lookup x
+lookupContext x = maybe (lift . throwE $ "panic: " ++ show x ++ " is not in scope") return . lookup x
 
 getFresh :: (Monad m) => ContextT m Int
 getFresh = do
@@ -34,14 +34,15 @@ vsolveMeta i = updateMeta i . Solution
 qsolveMeta :: (Monad m) => Int -> QTerm -> ContextT m ()
 qsolveMeta i = eval >=> vsolveMeta i
 
--- `lookup n` doesn't check whether `n` is in scope.
--- It must be, but we'd better get an error if it's not.
+-- Such a mess.
 getLookup :: (Monad m) => ContextT m (Env Int VTerm -> Head -> Maybe VTerm)
 getLookup = do
-  (_, das, (_, mas)) <- get 
+  (_, das, (_, mas)) <- get
   return $ \vs h -> case h of
-    (Meta (Entry _ i)) -> lookup i mas >>= tryGetSolution . snd
-    (Var  (Entry _ i)) -> lookup i vs
+    (Meta (Entry n i)) -> maybe (error $ "panic: meta " ++ n ++ " is not in scope")
+                                (tryGetSolution . snd)
+                                (lookup i mas)
+    (Var  (Entry n i)) -> lookup i vs
 
 eval :: (Monad m) => QTerm -> ContextT m VTerm
 eval t = flip pureEval t <$> getLookup

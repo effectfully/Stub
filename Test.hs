@@ -136,3 +136,59 @@ testCheck2 = evalTCM1 (stypecheck forCheck2 forCheckT2)
 
 -- (A : Type) -> (f : (B : A -> Type) -> (x : A) -> B x) ->
 --   (C : (B : A -> Type) -> (x : A) -> B x) -> C f -> C f
+
+forLamT :: Syntax
+forLamT = forall "A"
+        $ Pi "B" (var "A" ~> Star)
+        $ Pi "f" (forall "x" $ var "A" ~> App "B" [var"x"])
+        $ (:?)
+
+forLam :: Syntax
+forLam = Lam "A" $ Lam "B" $ Lam "f" $ Lam "x" $ App "f" [var "x", var "x"]
+
+-- Right (\A -> \B -> \f -> \x -> f x x,
+--         (A : Type) -> (B : A -> Type) -> (f : (x : A) -> A -> B x) -> (x : A) -> B x)
+testLam = evalTCM1 (stypecheck forLam forLamT)
+
+-- The expression
+
+-- ∀ A -> (B : A -> Type) -> (f : ∀ x -> A -> B x) -> _
+
+-- is elaborated to
+
+-- (A : ?0) -> (B : A -> Type) -> (f : (x : ?1 A B) -> A -> B x) -> ?2 A B f
+
+-- which after type checking becomes
+
+-- (A : Type) -> (B : A -> Type) -> (f : (x : A) -> A -> B x) -> ?2 A B f
+
+-- Then
+
+-- \A B f x -> f x x
+
+-- is checked against this type. The problem simplifies to
+
+-- (\x -> f x x) ∈? ?2 A B f
+
+-- thus `?2 A B f` represents a functional type, so two fresh metavariables
+-- (for domain and codomain) are introduced and the following unification problem arises:
+
+-- ?2 A B f =?= (x : ?3 A B f) -> ?4 A B f x
+
+-- `?2` is therefore solved by `\A B f -> (x : ?3 A B f) -> ?4 A B f x`.
+
+-- Now `\x -> f x x` is type checked against `(x : ?3 A B f) -> ?4 A B f x`,
+-- which simplifies to
+
+-- f x x ∈? ?4 A B f x
+
+-- with `x` being of type `?3 A B f`. `f` receives two `A`s, but is applied to two `?3 A B f`s,
+-- hence the former is unified with the latter and `?3` is solved by `?3 ≡ \A B f -> A`.
+
+-- The inferred type of `f x x` is `B x` while the expected is `?4 A B f x`,
+-- hence `?4 ≡ \A B f x -> B x`.
+
+-- The fully elaborated expression:
+
+-- testLam : (A : Type) -> (B : A -> Type) -> (f : (x : A) -> A -> B x) -> (x : A) -> B x
+-- testLam A B f x = f x x
