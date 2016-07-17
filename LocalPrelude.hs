@@ -20,6 +20,7 @@ import Data.Maybe
 import Data.Either
 import Data.List
 import Data.Functor.Identity
+import Data.Foldable
 import Control.Applicative
 import Control.Arrow 
 import Control.Monad
@@ -106,6 +107,9 @@ secondM g (x, y) = x .> g y
 thirdM :: Functor f => (c -> f d) -> (a, b, c) -> f (a, b, d)
 thirdM h (x, y, z) = (\w -> (x, y, w)) <$> h z
 
+allM :: (Foldable t, Monad m) => (a -> m Bool) -> t a -> m Bool
+allM p = foldrM (\x b -> (b &&) <$> p x) True
+
 both :: (a -> Bool) -> a -> a -> Bool
 both p x y = p x == p y
 
@@ -137,21 +141,16 @@ zipWithEq f  _      _     = Nothing
 qnub :: Ord a => [a] -> [a]
 qnub = map head . group . sort
 
-isSingleton :: [a] -> Bool
-isSingleton [_] = True
-isSingleton  _  = False
+tryIsSingleton :: [a] -> Maybe Bool
+tryIsSingleton []  = Nothing
+tryIsSingleton [_] = Just True
+tryIsSingleton  _  = Just False
 
-isUniqueIn :: Eq a => a -> [a] -> Bool
-isUniqueIn x = isSingleton . filter (x ==)
+tryIsUniqueIn :: Eq a => a -> [a] -> Maybe Bool
+tryIsUniqueIn x = tryIsSingleton . filter (x ==)
 
-isUnique :: Ord a => [a] -> Bool
-isUnique = all (null . tail) . group . sort
-
-isSublistOf :: Eq a => [a] -> [a] -> Bool
-xs `isSublistOf` ys = all (`elem` ys) xs
-
-isUniqueSublistOf :: Eq a => [a] -> [a] -> Bool
-isUniqueSublistOf xs ys = all (`isUniqueIn` ys) xs
+tryIsUniqueSublistOf :: Eq a => [a] -> [a] -> Maybe Bool
+tryIsUniqueSublistOf xs ys = allM (`tryIsUniqueIn` ys) xs
 
 maybeT :: (Monad m) => m b -> (a -> m b) -> MaybeT m a -> m b
 maybeT b f m = runMaybeT m >>= maybe b f

@@ -18,6 +18,9 @@ runTCM = runIdentity . runTCMT
 evalTCM :: TCM a -> Either String (a, Env Int (VType, MetaKind))
 evalTCM = (\(x, (_, _, (_, mks))) -> (x, mks)) <.> runTCM
 
+throwTCM :: (Monad m) => String -> TCMT m a
+throwTCM = lift2 . throwE
+
 withTyped :: (Monad m) => Entry -> VType -> TCMT m a -> TCMT m a
 withTyped (Entry n i) a k = modify (++ [(i, (n, a))]) *> k <* modify init
 
@@ -117,23 +120,24 @@ solveConstraints = do
     _            -> return ()
 
 -- TODO: occurs check and friends.
--- TODO: if `freeVars s` is not a sublist of `lvs`, we have an error.
 tryMiller :: QTerm -> QTerm -> MaybeT TCM ()
-tryMiller (QApp (Meta (Entry _ i)) ts) s | Just lvs <- traverse unQVar ts = do
+tryMiller t@(QApp (Meta (Entry _ i)) ts) s | Just lvs <- traverse unQVar ts = do
   True <- lift2 $ checkIsSolvable i
-  lift $ freeVars s `isUniqueSublistOf` map getId lvs ?> do
-    inas <- traverse (\e@(Entry n i) -> i .> nameQTypeOf (Var e)) lvs
-    lift $ qsolveMeta i (qcraft QLam inas s)
-    normMetaTypes
-    solveConstraints
-tryMiller  t                           s = mzero
+  lift $ case freeVars s `tryIsUniqueSublistOf` map getId lvs of
+    Nothing -> throwTCM $ show t ++ " and " ++ show s ++ " can't be unified"
+    Just b  -> b ?> do
+      inas <- traverse (\e@(Entry n i) -> i .> nameQTypeOf (Var e)) lvs
+      lift $ qsolveMeta i (qcraft QLam inas s)
+      normMetaTypes
+      solveConstraints
+tryMiller  t                             s = mzero
 
 tryMillerBoth :: QTerm -> QTerm -> MaybeT TCM ()
 tryMillerBoth t s = tryMiller t s <|> tryMiller s t
 
 tryUnifyChilds :: Bool -> QSpine -> QSpine -> MaybeT TCM Equations
 tryUnifyChilds b ts ss = 
-  maybe (b ?> lift3 (throwE "different number of arguments"))
+  maybe (b ?> lift (throwTCM "different number of arguments"))
         (lift . (concat <.> sequence))
         (zipWithEq qunify ts ss)
 
@@ -149,7 +153,7 @@ tryQAppUnify :: QTerm -> QTerm -> MaybeT TCM Equations
 tryQAppUnify t@(QApp (Var i) ts) s@(QApp (Var j) ss) =
   if i == j
     then tryUnifyChilds True ts ss
-    else lift3 $ throwE "different variables in heads"
+    else lift $ throwTCM "different variables in heads"
 tryQAppUnify t                   s                   = [] <$ tryFlexAny t s
 
 tryEtaExpandUnifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations)
@@ -200,7 +204,7 @@ infer   (CPi e a b) = do
   withTyped e ena $ do
     nb <- check b VStar
     return (QPi e na nb, VStar)
-infer   (CLam e t)  = lift2 $ throwE "panic: how did you get here?"
+infer   (CLam e t)  = throwTCM "panic: how did you get here?"
 infer t@(CApp h ts) = do
   b <- snd <$> nameVTypeOf h
   let l = length ts
@@ -214,15 +218,17 @@ saturate k  a           []    = return (k [], a)
 saturate k (VPi e a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (nx:)) (b enx) xs
 
 check :: CTerm -> VType -> TCM QTerm
-check   (CLam e t) (VPi _ a b) = QLam e (quote a) <$> withTyped e a (check t (b (vvar e)))
-check l@(CLam e t)  c          = case quote c of
-  QApp (Meta (Entry n i)) ts -> do
-    j <- lift $ getFresh
-    c' <- snd <$> checkEval (CPi (Entry "x" j) CMeta CMeta) VStar
-    es <- unify c' c
-    check l c' >>= qguardedWhen es c
-  _                          -> lift2 $ throwE "mismatch"
-check t             a          = do
+check   (CLam  e          t) (VPi _ a b) = QLam e (quote a) <$> withTyped e a (check t (b (vvar e)))
+check l@(CLam (Entry n _) t)  c          = case quote c of
+  QApp (Meta _) ts -> do
+    i <- lift $ getFresh
+    c' <- snd <$> checkEval (CPi (Entry n i) CMeta CMeta) VStar
+    t' <- check l c'
+    nc' <- lift $ vnorm c'
+    es <- unify nc' c
+    qguardedWhen es c t'
+  _                -> throwTCM "mismatch"
+check t                       a          = do
   (t', a') <- infer t
   es <- unify a' a
   qguardedWhen es a t'

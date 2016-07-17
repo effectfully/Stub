@@ -171,13 +171,10 @@ testLam = evalTCM1 (stypecheck forLam forLamT)
 -- (\x -> f x x) ∈? ?2 A B f
 
 -- thus `?2 A B f` represents a functional type, so two fresh metavariables
--- (for domain and codomain) are introduced and the following unification problem arises:
+-- (for domain and codomain) are introduced and the problem now looks like
 
--- ?2 A B f =?= (x : ?3 A B f) -> ?4 A B f x
+-- (\x -> f x x) ∈? (x : ?3 A B f) -> ?4 A B f x
 
--- `?2` is therefore solved by `\A B f -> (x : ?3 A B f) -> ?4 A B f x`.
-
--- Now `\x -> f x x` is type checked against `(x : ?3 A B f) -> ?4 A B f x`,
 -- which simplifies to
 
 -- f x x ∈? ?4 A B f x
@@ -188,7 +185,43 @@ testLam = evalTCM1 (stypecheck forLam forLamT)
 -- The inferred type of `f x x` is `B x` while the expected is `?4 A B f x`,
 -- hence `?4 ≡ \A B f x -> B x`.
 
+-- Finally, the original type of `\x -> f x x` is unified with
+-- the type `\x -> f x x` was type checked against, which after normalization looks like
+
+-- ?2 A B f =?= (x : A) -> B x
+
+-- which is trivially `?2 ≡ \A B f -> (x : A) -> B x`.
+
 -- The fully elaborated expression:
 
 -- testLam : (A : Type) -> (B : A -> Type) -> (f : (x : A) -> A -> B x) -> (x : A) -> B x
 -- testLam A B f x = f x x
+
+forDepNonT :: Syntax
+forDepNonT = forall "A"
+           $ forall "B"
+           $ (Pi "B" (var "A" ~> Star) $
+               (forall "x" $ App "B" [var "x"]) ~> (forall "x" $ App "B" [var "x"]))
+           ~> (var "A" ~> var "B") ~> var "A" ~> var "B"
+
+
+forDepNon :: Syntax
+forDepNon = Lam "A" $ Lam "B" $ Lam "C" $ App "C" [(:?)]
+
+-- Right (\A -> \B -> \C -> C (\x -> B),
+--         (A : Type) -> (B : Type) ->
+--           ((B : A -> Type) -> ((x : A) -> B x) -> (x : A) -> B x) ->
+--             (A -> B) -> A -> B)
+testDepNon = evalTCM1 (stypecheck forDepNon forDepNonT)
+
+forNonDepT :: Syntax
+forNonDepT = forall "A"
+           $ Pi "B" (var "A" ~> Star)
+           $ (forall "B" $ (Pi "x" (var "A") $ var "B") ~> var "A" ~> var "B")
+           ~> (forall "x" $ App "B" [var "x"]) ~> (forall "x" $ App "B" [var "x"])
+
+forNonDep :: Syntax
+forNonDep = Lam "A" $ Lam "B" $ Lam "C" $ App "C" [(:?)]
+
+-- Left "?9 'A 'B 'C and 'B 'x can't be unified"
+testNonDep = evalTCM1 (stypecheck forNonDep forNonDepT)
