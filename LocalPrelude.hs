@@ -117,26 +117,11 @@ fromRight :: Either a b -> b
 fromRight (Left  x) = error "fromRight"
 fromRight (Right y) = y
 
-tryInitLast :: [a] -> Maybe ([a], a)
-tryInitLast  []    = Nothing
-tryInitLast  [x]   = Just ([], x)
-tryInitLast (x:xs) = first (x:) <$> tryInitLast xs
-
 mapup :: Eq a => a -> (b -> b) -> [(a, b)] -> [(a, b)]
 mapup x g  []            = []
 mapup x g ((y, z) : yzs)
   | x == y    = (y, g z) : yzs
   | otherwise = (y, z)   : mapup x g yzs
-
-zipFilter :: [Bool] -> [a] -> [a]
-zipFilter  []           xs      = []
-zipFilter (True  : bs) (x : xs) = x : zipFilter bs xs
-zipFilter (False : bs) (x : xs) = zipFilter bs xs
-
-zipWithEq :: (a -> b -> c) -> [a] -> [b] -> Maybe [c]
-zipWithEq f  []     []    = Just []
-zipWithEq f (x:xs) (y:ys) = (f x y :) <$> zipWithEq f xs ys
-zipWithEq f  _      _     = Nothing
 
 qnub :: Ord a => [a] -> [a]
 qnub = map head . group . sort

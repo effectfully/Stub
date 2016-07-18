@@ -186,7 +186,7 @@ testLam = evalTCM1 (stypecheck forLam forLamT)
 -- hence `?4 ≡ \A B f x -> B x`.
 
 -- Finally, the original type of `\x -> f x x` is unified with
--- the type `\x -> f x x` was type checked against, which after normalization looks like
+-- the type `\x -> f x x` was checked against, which after normalization looks like
 
 -- ?2 A B f =?= (x : A) -> B x
 
@@ -203,7 +203,6 @@ forDepNonT = forall "A"
            $ (Pi "B" (var "A" ~> Star) $
                (forall "x" $ App "B" [var "x"]) ~> (forall "x" $ App "B" [var "x"]))
            ~> (var "A" ~> var "B") ~> var "A" ~> var "B"
-
 
 forDepNon :: Syntax
 forDepNon = Lam "A" $ Lam "B" $ Lam "C" $ App "C" [(:?)]

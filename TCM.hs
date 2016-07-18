@@ -56,7 +56,7 @@ newVMetaKind :: (Monad m) => String -> VType -> MetaKind -> TCMT m VTerm
 newVMetaKind = newMetaKindBy $ foldl' (\f -> VApp f . vvar) . vmeta
 
 craftGuarded :: (Monad m) => Equations -> QTerm -> TCMT m MetaKind
-craftGuarded es t = (\inas -> Guarded es (qcraft QLam (vconToQCon inas) t)) <$> get
+craftGuarded es t = (\inas -> Guarded es (qcraft (\e _ -> QLam e) (vconToQCon inas) t)) <$> get
 
 newQGuarded :: (Monad m) => Equations -> VType -> QTerm -> TCMT m QTerm
 newQGuarded es a = craftGuarded es >=> newQMetaKind "" a
@@ -108,7 +108,8 @@ solveConstraints = do
   (i, das, (m, mas)) <- lift get
   forM_ mas $ \(j, (a, mk)) -> case mk of
     Guarded es t -> do
-      es' <- concat <$> traverse (\(x, y) -> vunify <$> lift (vnorm x) <&> lift (vnorm y)) es
+      es' <- concat <.> forM es $
+        \(a, x, y) -> unify a <$> lift (vnorm x) <&> lift (vnorm y)
       lift $ if null es' then qsolveMeta j t else updateMeta j (Guarded es' t)
     Check b l t  -> do
       nb <- lift $ vnorm b
@@ -127,75 +128,67 @@ tryMiller t@(QApp (Meta (Entry _ i)) ts) s | Just lvs <- traverse unQVar ts = do
     Nothing -> throwTCM $ show t ++ " and " ++ show s ++ " can't be unified"
     Just b  -> b ?> do
       inas <- traverse (\e@(Entry n i) -> i .> nameQTypeOf (Var e)) lvs
-      lift $ qsolveMeta i (qcraft QLam inas s)
+      lift $ qsolveMeta i (qcraft (\e _ -> QLam e) inas s)
       normMetaTypes
       solveConstraints
+      normVarTypes
 tryMiller  t                             s = mzero
 
 tryMillerBoth :: QTerm -> QTerm -> MaybeT TCM ()
 tryMillerBoth t s = tryMiller t s <|> tryMiller s t
 
-tryUnifyChilds :: Bool -> QSpine -> QSpine -> MaybeT TCM Equations
-tryUnifyChilds b ts ss = 
-  maybe (b ?> lift (throwTCM "different number of arguments"))
-        (lift . (concat <.> sequence))
-        (zipWithEq qunify ts ss)
+tryUnifyChilds :: Bool -> Head -> QSpine -> QSpine -> MaybeT TCM Equations
+tryUnifyChilds c h ts ss =
+  lift (nameVTypeOf h) >>= \(_, a) -> lift2 (vnorm a) >>= \na -> go c na ts ss where
+  go c a   []     []    = return []
+  go c ab (t:ts) (s:ss) = case ab of
+    -- What if `t =?= s` results in unsolved constraints? That `b et` looks troubling.
+    (VPi _ a b) -> lift2 (eval t) >>= \et -> (++) <$> lift (qunify a t s) <*> go c (b et) ts ss
+    _           -> lift $ throwTCM "panic: something bad happened"
+  go c a   ts     ss    = c ?> lift (throwTCM "different number of arguments")
 
 -- TODO: intersections stuff.
 tryFlexAny :: QTerm -> QTerm -> MaybeT TCM ()
-tryFlexAny t@(QApp (Meta e) ts) s@(QApp (Meta f) ss) =
-  e == f ?> do
-    [] <- tryUnifyChilds (all isForeverNeutral (ts ++ ss)) ts ss
+tryFlexAny t@(QApp h@(Meta (Entry _ i)) ts) s@(QApp (Meta (Entry _ j)) ss) =
+  i == j ?> do
+    [] <- tryUnifyChilds (all isForeverNeutral (ts ++ ss)) h ts ss
     return ()
-tryFlexAny t                    s                    = tryMillerBoth t s
+tryFlexAny t                                s                              = tryMillerBoth t s
 
 tryQAppUnify :: QTerm -> QTerm -> MaybeT TCM Equations
-tryQAppUnify t@(QApp (Var i) ts) s@(QApp (Var j) ss) =
+tryQAppUnify t@(QApp h@(Var (Entry _ i)) ts) s@(QApp (Var (Entry _ j)) ss) =
   if i == j
-    then tryUnifyChilds True ts ss
+    then tryUnifyChilds True h ts ss
     else lift $ throwTCM "different variables in heads"
-tryQAppUnify t                   s                   = [] <$ tryFlexAny t s
+tryQAppUnify t                               s                             = [] <$ tryFlexAny t s
 
-tryEtaExpandUnifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations)
-                      -> VTerm -> VTerm -> MaybeT TCM Equations
-tryEtaExpandUnifyWith cont t@(VLam e a k) s = lift $ unifyWith cont t (etaExpand e a s)
-tryEtaExpandUnifyWith cont _              _ = mzero
-
-tryEtaExpandUnifyWithBoth :: (VTerm -> VTerm -> MaybeT TCM Equations)
-                          -> VTerm -> VTerm -> MaybeT TCM Equations
-tryEtaExpandUnifyWithBoth cont t s =  tryEtaExpandUnifyWith cont t s
-                                  <|> tryEtaExpandUnifyWith cont s t
-
--- This really should be type-directed.
-unifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations) -> VTerm -> VTerm -> TCM Equations
-unifyWith cont  VStar          VStar         = return []
-unifyWith cont (VPi  e a1 b1) (VPi  _ a2 b2) = do
-  es <- unifyWith cont a1 a2
+unifyWith :: (VTerm -> VTerm -> MaybeT TCM Equations) -> VType -> VTerm -> VTerm -> TCM Equations
+unifyWith cont  VStar       VStar          VStar         = return []
+unifyWith cont  VStar      (VPi  e a1 b1) (VPi  _ a2 b2) = do
+  es <- unifyWith cont VStar a1 a2
   (es ++) <.> withTyped e a1 $ do
     gv <- vguardedWhen es a2 (qvar e)
     nb1 <- lift $ vnorm (b1 (vvar e))
     nb2 <- lift $ vnorm (b2  gv)
-    unifyWith cont nb1 nb2
-    -- unifyWith cont (b1 (vvar e)) (b2 gv) -- For testing.
-unifyWith cont (VLam e a1 k1) (VLam _ a2 k2) =
-  withTyped e a1 $ unifyWith cont (k1 (vvar e)) (k2 (vvar e))
-unifyWith cont  t              s             =
-  fromMaybeT (return [(t, s)]) $ tryEtaExpandUnifyWithBoth cont t s <|> cont t s
+    unifyWith cont VStar nb1 nb2
+unifyWith cont (VPi e a b)  t1             t2            =
+  withTyped e a $ unifyWith cont (b (vvar e)) (k1 (vvar e)) (k2 (vvar e)) where
+    VLam _ k1 = etaExpandUnless e t1
+    VLam _ k2 = etaExpandUnless e t2
+unifyWith cont  a           t1             t2            =
+  fromMaybeT (return [(a, t1, t2)]) $ cont t1 t2
 
-evalUnify :: QTerm -> QTerm -> TCM Equations
-evalUnify t s = unifyWith (\_ _ -> mzero) <$> lift (eval t) <&> lift (eval s)
+evalUnify :: VType -> QTerm -> QTerm -> TCM Equations
+evalUnify a t s = unifyWith (\_ _ -> mzero) a <$> lift (eval t) <&> lift (eval s)
 
-qunify :: QTerm -> QTerm -> TCM Equations
-qunify t s = fromMaybeT (evalUnify t s) $ tryQAppUnify t s
+qunify :: VType -> QTerm -> QTerm -> TCM Equations
+qunify a t s = fromMaybeT (evalUnify a t s) $ tryQAppUnify t s
 
 tryQuoteUnify :: VTerm -> VTerm -> MaybeT TCM Equations
 tryQuoteUnify t s = tryQAppUnify (quote t) (quote s)
 
-vunify :: VTerm -> VTerm -> TCM Equations
-vunify = unifyWith tryQuoteUnify
-
-unify :: VTerm -> VTerm -> TCM Equations
-unify t s = vunify t s <* normVarTypes
+unify :: VType -> VTerm -> VTerm -> TCM Equations
+unify a t s = unifyWith tryQuoteUnify a t s
 
 infer :: CTerm -> TCM (QTerm, VType)
 infer    CStar      = return (QStar, VStar)
@@ -218,19 +211,19 @@ saturate k  a           []    = return (k [], a)
 saturate k (VPi e a b) (x:xs) = checkEval x a >>= \(nx, enx) -> saturate (k . (nx:)) (b enx) xs
 
 check :: CTerm -> VType -> TCM QTerm
-check   (CLam  e          t) (VPi _ a b) = QLam e (quote a) <$> withTyped e a (check t (b (vvar e)))
+check   (CLam  e          t) (VPi _ a b) = QLam e <$> withTyped e a (check t (b (vvar e)))
 check l@(CLam (Entry n _) t)  c          = case quote c of
   QApp (Meta _) ts -> do
     i <- lift $ getFresh
     c' <- snd <$> checkEval (CPi (Entry n i) CMeta CMeta) VStar
     t' <- check l c'
     nc' <- lift $ vnorm c'
-    es <- unify nc' c
+    es <- unify VStar nc' c
     qguardedWhen es c t'
   _                -> throwTCM "mismatch"
 check t                       a          = do
   (t', a') <- infer t
-  es <- unify a' a
+  es <- unify VStar a' a
   qguardedWhen es a t'
 
 checkEval :: CTerm -> VType -> TCM (QTerm, VTerm)

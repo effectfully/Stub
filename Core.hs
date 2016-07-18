@@ -34,7 +34,7 @@ type VCon   = Env Int (String, VType) -- `IntMap`.
 data VTerm = VStar
            | VPi   !Entry VType (VTerm -> VType)
            | VHead !Head
-           | VLam  !Entry VType (VTerm -> VTerm)
+           | VLam  !Entry (VTerm -> VTerm)
            | VApp VTerm VTerm
 
 fromHead :: (Entry -> a) -> (Entry -> a) -> Head -> a
@@ -48,11 +48,15 @@ vmeta :: Entry -> VTerm
 vmeta = VHead . Meta
 
 appVSpine :: VTerm -> VSpine -> VTerm
-appVSpine (VLam _ _ k) (x:xs) = appVSpine (k x) xs
-appVSpine  t            xs    = foldl' VApp t xs
+appVSpine (VLam _ k) (x:xs) = appVSpine (k x) xs
+appVSpine  t          xs    = foldl' VApp t xs
 
-etaExpand :: Entry -> VType -> VTerm -> VTerm
-etaExpand e a = VLam e a . VApp
+etaExpand :: Entry -> VTerm -> VTerm
+etaExpand e = VLam e . VApp
+
+etaExpandUnless :: Entry -> VTerm -> VTerm
+etaExpandUnless _ (VLam e k) = VLam e k
+etaExpandUnless e  t         = etaExpand e t
 
 countVPis :: VType -> Int
 countVPis (VPi e a b) = countVPis (b (vvar e)) + 1
@@ -72,7 +76,7 @@ type QCon   = Env Int (String, QType)
 
 data QTerm = QStar
            | QPi  !Entry QType QType
-           | QLam !Entry QType QTerm
+           | QLam !Entry QTerm
            | QApp !Head QSpine
 
 qvar :: Entry -> QTerm
@@ -101,7 +105,7 @@ spineQApp (QApp h ts) t = QApp h (ts ++ [t])
 allFreeVarsModulo :: Frees -> QTerm -> Frees
 allFreeVarsModulo is  QStar                 = []
 allFreeVarsModulo is (QPi  (Entry n i) a b) = allFreeVarsModulo is a ++ allFreeVarsModulo (i:is) b
-allFreeVarsModulo is (QLam (Entry n i) a t) = allFreeVarsModulo (i:is) t
+allFreeVarsModulo is (QLam (Entry n i) t)   = allFreeVarsModulo (i:is) t
 allFreeVarsModulo is (QApp h ts)            =
   headFreeVarsModulo is h ++ concatMap (allFreeVarsModulo is) ts
 
@@ -120,14 +124,14 @@ pureEval (!) = go [] where
   go :: Env Int VTerm -> QTerm -> VTerm
   go vs  QStar                   = VStar
   go vs (QPi  e@(Entry n i) a b) = VPi  e (go vs a) (\v -> go ((i, v) : vs) b)
-  go vs (QLam e@(Entry n i) a t) = VLam e (go vs a) (\v -> go ((i, v) : vs) t)
+  go vs (QLam e@(Entry n i) t)   = VLam e (\v -> go ((i, v) : vs) t)
   go vs (QApp h ts)              = fromMaybe (VHead h) (vs ! h) `appVSpine` map (go vs) ts
 
 quote :: VTerm -> QTerm
 quote  VStar       = QStar
 quote (VPi  e a b) = QPi  e (quote a) (quote (b (vvar e)))
 quote (VHead h)    = QApp h []
-quote (VLam e a k) = QLam e (quote a) (quote (k (vvar e)))
+quote (VLam e k)   = QLam e (quote (k (vvar e)))
 quote (VApp f x)   = quote f `spineQApp` quote x
 
 --------------------
@@ -142,7 +146,7 @@ data CTerm = CStar
            | CApp !Head CSpine
            | CMeta
 
-type Equations  = [(VTerm, VTerm)]
+type Equations  = [(VType, VTerm, VTerm)]
 
 data MetaKind = Guarded Equations QTerm
               | Check VType Int CTerm
@@ -194,7 +198,7 @@ instance Show Syntax where
 qtermToCTerm :: QTerm -> CTerm
 qtermToCTerm  QStar       = CStar
 qtermToCTerm (QPi  e a b) = CPi  e (qtermToCTerm a) (qtermToCTerm b)
-qtermToCTerm (QLam e a t) = CLam e (qtermToCTerm t)
+qtermToCTerm (QLam e t)   = CLam e (qtermToCTerm t)
 qtermToCTerm (QApp h ts)  = CApp h (map qtermToCTerm ts)
 
 ctermToSyntax :: CTerm -> Syntax
